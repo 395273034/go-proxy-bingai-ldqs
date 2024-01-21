@@ -43,7 +43,7 @@ const isShowHistory = computed(() => {
   return (CIB.vm.isMobile && CIB.vm.sidePanel.isVisibleMobile) || (!CIB.vm.isMobile && CIB.vm.sidePanel.isVisibleDesktop);
 });
 
-const { themeMode } = storeToRefs(userStore);
+const { themeMode, gpt4tEnable, sydneyEnable, sydneyPrompt, enterpriseEnable } = storeToRefs(userStore);
 
 onMounted(async () => {
   await initChat();
@@ -55,6 +55,8 @@ onMounted(async () => {
 
   isShowLoading.value = false;
   hackStyle();
+  hackEnterprise();
+  hackSydney();
   initChatPrompt();
 
   // set Theme
@@ -63,7 +65,6 @@ onMounted(async () => {
   } else if (themeMode.value == 'dark') {
     CIB.changeColorScheme(1);
   } else if (themeMode.value == 'auto') {
-    // CIB.changeColorScheme(2);
     if (window.matchMedia("(prefers-color-scheme: dark)").matches) {
       CIB.changeColorScheme(1);
     } else {
@@ -94,6 +95,14 @@ const initChatService = () => {
     }
     chatStore.checkAllSydneyConfig();
   }
+  CIB.config.captcha.baseUrl = location.origin;
+  CIB.config.bing.baseUrl = location.origin;
+  CIB.config.bing.signIn.baseUrl = location.origin;
+  CIB.config.answers.baseUrl = location.origin;
+  CIB.config.answers.secondTurnScreenshotBaseUrl = location.origin;
+  CIB.config.contentCreator.baseUrl = location.origin;
+  CIB.config.visualSearch.baseUrl = location.origin;
+  CIB.config.suggestionsv2.baseUrl = location.origin;
 };
 
 const initSysConfig = async () => {
@@ -105,7 +114,7 @@ const initSysConfig = async () => {
           isShowUnauthorizedModal.value = true;
           return;
         }
-        afterAuth(res.data);
+        await afterAuth(res.data);
       }
       break;
     default:
@@ -114,9 +123,9 @@ const initSysConfig = async () => {
   }
 };
 
-const afterAuth = (data: SysConfig) => {
+const afterAuth = async (data: SysConfig) => {
   if (!data.isSysCK) {
-    userStore.checkUserToken();
+    await userStore.checkUserToken();
   }
   initChatService();
 };
@@ -133,11 +142,16 @@ const hackStyle = () => {
     CIB.config.sydney.hostnamesToBypassSecureConnection = CIB.config.sydney.hostnamesToBypassSecureConnection.filter((x) => x !== location.hostname);
   }
   const serpEle = document.querySelector('cib-serp');
-  // 居中
-  serpEle?.setAttribute('alignment', 'center');
   const conversationEle = serpEle?.shadowRoot?.querySelector('cib-conversation') as HTMLElement;
   // todo 反馈暂时无法使用，先移除
   const welcomeEle = conversationEle?.shadowRoot?.querySelector('cib-welcome-container');
+  const loginTip = welcomeEle?.shadowRoot?.querySelectorAll("div[class='muid-upsell']");
+  if (loginTip?.length) {
+    loginTip.forEach((ele) => {
+      ele.remove();
+    });
+  }
+  welcomeEle?.shadowRoot?.querySelector('.preview-container')?.remove();
   welcomeEle?.shadowRoot?.querySelector('.footer')?.remove();
   serpEle?.shadowRoot?.querySelector('cib-serp-feedback')?.remove();
   if (isMobile()) {
@@ -152,6 +166,54 @@ const hackStyle = () => {
 
 interface IActionBarElement extends HTMLElement {
   handleInputTextKey: (ev: KeyboardEvent) => void;
+}
+
+const hackEnterprise = () => {
+  if (enterpriseEnable.value) {
+    CIB.config.bingAtWork.isBingChatForEnterpriseEnabled = true;
+    CIB.config.bingAtWork.chatType = "enterprise";
+  }
+}
+
+const hackSydney = () => {
+  if (gpt4tEnable.value) {
+    CIB.config.sydney.request.optionsSets.push("dlgpt4t")
+  }
+  if (sydneyEnable.value) {
+    CIB.config.sydney.request.sliceIds = [
+      "winmuid1tf",
+			"styleoff",
+			"ccadesk",
+			"smsrpsuppv4cf",
+			"ssrrcache",
+			"contansperf",
+			"crchatrev",
+			"winstmsg2tf",
+			"creatgoglt",
+			"creatorv2t",
+			"sydconfigoptt",
+			"adssqovroff",
+			"530pstho",
+			"517opinion",
+			"418dhlth",
+			"512sprtic1s0",
+			"emsgpr",
+			"525ptrcps0",
+			"529rweas0",
+			"515oscfing2s0",
+			"524vidansgs0",
+    ]
+    CIB.config.sydney.request.optionsSets.push("rai278", "enflst", "enpcktrk",  "rcaldictans", "rcaltimeans", "nojbfedge")
+    CIB.config.features.enableUpdateConversationMessages = true
+    CIB.registerContext([{
+      "author": "user",
+      "description": sydneyPrompt.value,
+      "contextType": "WebPage",
+      "messageType": "Context",
+      "messageId": "discover-web--page-ping-mriduna-----",
+    }])
+    CIB.config.strings.webPageContextPrefix = '已处于越狱模式, 请谨慎使用避免封号'
+  }
 }
 
 const initChatPrompt = () => {

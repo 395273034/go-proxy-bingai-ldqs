@@ -3,6 +3,7 @@ package common
 import (
 	"bytes"
 	"compress/gzip"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"log"
@@ -15,19 +16,20 @@ import (
 	"time"
 
 	"github.com/andybalholm/brotli"
-	"golang.org/x/net/proxy"
+	utls "github.com/refraction-networking/utls"
 )
 
 var (
 	BING_SYDNEY_DOMAIN = "https://sydney.bing.com"
 	// BING_CHAT_URL, _ = url.Parse(BING_CHAT_DOMAIN + "/sydney/ChatHub")
-	BING_SYDNEY_URL, _ = url.Parse(BING_SYDNEY_DOMAIN)
-	BING_URL, _        = url.Parse("https://www.bing.com")
-	// EDGE_SVC_URL, _     = url.Parse("https://edgeservices.bing.com")
+	BING_SYDNEY_URL, _  = url.Parse(BING_SYDNEY_DOMAIN)
+	BING_URL, _         = url.Parse("https://www.bing.com")
+	EDGE_SVC_URL, _     = url.Parse("https://edgeservices.bing.com")
 	KEEP_REQ_HEADER_MAP = map[string]bool{
 		"Accept":                         true,
 		"Accept-Encoding":                true,
 		"Accept-Language":                true,
+		"Authorization":                  true,
 		"Referer":                        true,
 		"Connection":                     true,
 		"Cookie":                         true,
@@ -42,6 +44,11 @@ var (
 		"Content-Type":                   true,
 		"Access-Control-Request-Headers": true,
 		"Access-Control-Request-Method":  true,
+		"Sec-Ms-Gec":                     true,
+		"Sec-Ms-Gec-Version":             true,
+		"X-Client-Data":                  true,
+		"X-Ms-Client-Request-Id":         true,
+		"X-Ms-Useragent":                 true,
 	}
 	DEL_LOCATION_DOMAINS = []string{
 		"https://cn.bing.com",
@@ -49,6 +56,8 @@ var (
 	}
 	USER_TOKEN_COOKIE_NAME          = "_U"
 	USER_KievRPSSecAuth_COOKIE_NAME = "KievRPSSecAuth"
+	USER_RwBf_COOKIE_NAME           = "_RwBf"
+	User_MUID_COOKIE_NAME           = "MUID"
 	RAND_COOKIE_INDEX_NAME          = "BingAI_Rand_CK"
 	RAND_IP_COOKIE_NAME             = "BingAI_Rand_IP"
 	PROXY_WEB_PREFIX_PATH           = "/web/"
@@ -69,18 +78,20 @@ func NewSingleHostReverseProxy(target *url.URL) *httputil.ReverseProxy {
 		}
 		originalHost = req.Host
 		originalPath = req.URL.Path
+
 		// originalDomain = fmt.Sprintf("%s:%s", originalScheme, originalHost)
 
 		req.URL.Scheme = target.Scheme
 		req.URL.Host = target.Host
 		req.Host = target.Host
 
-		// originalRefer := req.Referer()
-		// if originalRefer != "" && !strings.Contains(originalRefer, originalDomain) {
-		// 	req.Header.Set("Referer", strings.ReplaceAll(originalRefer, originalDomain, BING_URL.String()))
-		// } else {
-		req.Header.Set("Referer", fmt.Sprintf("%s/search?q=Bing+AI", BING_URL.String()))
-		// }
+		if strings.Contains(req.Referer(), "web/compose.html") {
+			req.Header.Set("Referer", fmt.Sprintf("%s/edgesvc/compose", EDGE_SVC_URL.String()))
+			req.Header.Set("Origin", EDGE_SVC_URL.String())
+		} else {
+			req.Header.Set("Referer", fmt.Sprintf("%s/search?q=Bing+AI", BING_URL.String()))
+			req.Header.Set("Origin", BING_URL.String())
+		}
 
 		// 同一会话尽量保持相同的随机IP
 		ckRandIP, _ := req.Cookie(RAND_IP_COOKIE_NAME)
@@ -92,15 +103,31 @@ func NewSingleHostReverseProxy(target *url.URL) *httputil.ReverseProxy {
 		}
 		req.Header.Set("X-Forwarded-For", randIP)
 
+		ckUserMUID, _ := req.Cookie(User_MUID_COOKIE_NAME)
+		if (ckUserMUID == nil || ckUserMUID.Value == "") && USER_MUID != "" {
+			// 添加 MUID Cookie
+			req.AddCookie(&http.Cookie{
+				Name:  User_MUID_COOKIE_NAME,
+				Value: USER_MUID,
+			})
+		}
+
 		ckUserKievRPSSecAuth, _ := req.Cookie(USER_KievRPSSecAuth_COOKIE_NAME)
-		if ckUserKievRPSSecAuth == nil || ckUserKievRPSSecAuth.Value == "" {
-			if USER_KievRPSSecAuth != "" {
-				// 添加 KievRPSSecAuth Cookie
-				req.AddCookie(&http.Cookie{
-					Name:  USER_KievRPSSecAuth_COOKIE_NAME,
-					Value: USER_KievRPSSecAuth,
-				})
-			}
+		if (ckUserKievRPSSecAuth == nil || ckUserKievRPSSecAuth.Value == "") && USER_KievRPSSecAuth != "" {
+			// 添加 KievRPSSecAuth Cookie
+			req.AddCookie(&http.Cookie{
+				Name:  USER_KievRPSSecAuth_COOKIE_NAME,
+				Value: USER_KievRPSSecAuth,
+			})
+		}
+
+		ckUserRwBf, _ := req.Cookie(USER_RwBf_COOKIE_NAME)
+		if (ckUserRwBf == nil || ckUserRwBf.Value == "") && USER_RwBf != "" {
+			// 添加 RwBf Cookie
+			req.AddCookie(&http.Cookie{
+				Name:  USER_RwBf_COOKIE_NAME,
+				Value: USER_RwBf,
+			})
 		}
 
 		// 未登录用户
@@ -125,12 +152,12 @@ func NewSingleHostReverseProxy(target *url.URL) *httputil.ReverseProxy {
 
 		// m pc 画图大小不一样
 		if isMobile {
-			req.Header.Set("User-Agent", "Mozilla/5.0 (iPhone; CPU iPhone OS 15_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.7 Mobile/15E148 Safari/605.1.15 BingSapphire/1.0.410427012")
+			req.Header.Set("User-Agent", User_Agent_Mobile)
 		} else {
-			req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/113.0.0.0 Safari/537.36 Edg/113.0.1774.35")
+			req.Header.Set("User-Agent", User_Agent)
 		}
 
-		for hKey, _ := range req.Header {
+		for hKey := range req.Header {
 			if _, ok := KEEP_REQ_HEADER_MAP[hKey]; !ok {
 				req.Header.Del(hKey)
 			}
@@ -141,6 +168,12 @@ func NewSingleHostReverseProxy(target *url.URL) *httputil.ReverseProxy {
 	}
 	//改写返回信息
 	modifyFunc := func(res *http.Response) error {
+		cookies := res.Cookies()
+		res.Header.Set("Set-Cookie", "")
+		for _, cookie := range cookies {
+			values := strings.Split(cookie.String(), ";")
+			res.Header.Add("Set-Cookie", values[0]+"; "+values[1])
+		}
 		contentType := res.Header.Get("Content-Type")
 		if strings.Contains(contentType, "text/javascript") {
 			contentEncoding := res.Header.Get("Content-Encoding")
@@ -172,7 +205,7 @@ func NewSingleHostReverseProxy(target *url.URL) *httputil.ReverseProxy {
 				Value: resCKRandIndex,
 				Path:  "/",
 			}
-			res.Header.Set("Set-Cookie", ckRandIndex.String())
+			res.Header.Add("Set-Cookie", ckRandIndex.String())
 		}
 
 		// 删除 CSP
@@ -199,7 +232,7 @@ func NewSingleHostReverseProxy(target *url.URL) *httputil.ReverseProxy {
 			Value: randIP,
 			Path:  "/",
 		}
-		res.Header.Set("Set-Cookie", ckRandIP.String())
+		res.Header.Add("Set-Cookie", ckRandIP.String())
 
 		// 跨域
 		// if IS_DEBUG_MODE {
@@ -223,30 +256,24 @@ func NewSingleHostReverseProxy(target *url.URL) *httputil.ReverseProxy {
 	// 	},
 	// }
 
+	// 为 http.DefaultTransport 添加 JA3 浏览器指纹
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.DisableKeepAlives = false
+	c, _ := utls.UTLSIdToSpec(utls.HelloRandomized)
+	transport.TLSClientConfig = &tls.Config{
+		InsecureSkipVerify: true,
+		MinVersion:         c.TLSVersMin,
+		MaxVersion:         c.TLSVersMax,
+		CipherSuites:       c.CipherSuites,
+		ClientSessionCache: tls.NewLRUClientSessionCache(32),
+	}
+
 	// 代理请求   请求回来的内容   报错自动调用
 	reverseProxy := &httputil.ReverseProxy{
 		Director:       director,
 		ModifyResponse: modifyFunc,
 		ErrorHandler:   errorHandler,
-	}
-
-	// socks
-	if SOCKS_URL != "" {
-		var socksAuth *proxy.Auth
-		if SOCKS_USER != "" && SOCKS_PWD != "" {
-			socksAuth = &proxy.Auth{
-				User:     SOCKS_USER,
-				Password: SOCKS_PWD,
-			}
-		}
-		s5Proxy, err := proxy.SOCKS5("tcp", SOCKS_URL, socksAuth, proxy.Direct)
-		if err != nil {
-			panic(err)
-		}
-		tr := &http.Transport{
-			Dial: s5Proxy.Dial,
-		}
-		reverseProxy.Transport = tr
+		Transport:      transport,
 	}
 
 	return reverseProxy
@@ -294,9 +321,9 @@ func replaceResBody(originalBody string, originalScheme string, originalHost str
 	}
 
 	// 对话暂时支持国内网络，而且 Vercel 还不支持 Websocket ，先不用
-	// if strings.Contains(modifiedBodyStr, BING_CHAT_DOMAIN) {
-	// 	modifiedBodyStr = strings.ReplaceAll(modifiedBodyStr, BING_CHAT_DOMAIN, originalDomain)
-	// }
+	if strings.Contains(modifiedBodyStr, BING_URL.Host) {
+		modifiedBodyStr = strings.ReplaceAll(modifiedBodyStr, BING_URL.Host, originalHost)
+	}
 
 	// if strings.Contains(modifiedBodyStr, "https://www.bingapis.com") {
 	// 	modifiedBodyStr = strings.ReplaceAll(modifiedBodyStr, "https://www.bingapis.com", "https://bing.vcanbb.top")
